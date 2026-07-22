@@ -537,6 +537,7 @@ body {
 
 .fi-no-database .fi-modal-window.fi-align-center .fi-modal-icon-ctn {
     margin-bottom: 1.75rem;
+    transform: translateX(0.25rem);
 }
 
 .fi-no-database .fi-modal-window.fi-align-center .fi-modal-close-btn {
