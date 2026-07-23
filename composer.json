@@ -8,7 +8,7 @@
     ],
     "license": "MIT",
     "require": {
-        "php": "^8.2",
+        "php": "^8.3",
         "ext-gd": "*",
         "amidesfahani/filament-tinyeditor": "^5.0",
         "awcodes/filament-badgeable-column": "^4.0",
@@ -39,7 +39,7 @@
         "mchev/banhammer": "^2",
         "mike-bronner/laravel-model-caching": "^13.0",
         "omnipay/paypal": "^3.0",
-        "openjournalteam/laravel-bangau-mail": "^0.1",
+        "openjournalteam/laravel-bangau-mail": "^0.2.0",
         "plank/laravel-metable": "^6.0",
         "propaganistas/laravel-disposable-email": "^2.2",
         "propaganistas/laravel-phone": "^6.0",
