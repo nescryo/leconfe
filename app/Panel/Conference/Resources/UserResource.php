@@ -113,8 +113,10 @@ class UserResource extends Resource
                                     ->label(__('general.public_name'))
                                     ->helperText(__('general.public_name_helper'))
                                     ->columnSpan(['lg' => 2]),
-                                TextInput::make('email')
+                                Forms\Components\TextInput::make('email')
                                     ->required()
+                                    ->email()
+                                    ->dehydrateStateUsing(fn ($state) => is_string($state) ? \Illuminate\Support\Str::lower(trim($state)) : $state)
                                     ->label(__('general.email'))
                                     ->columnSpan(['lg' => 2])
                                     ->unique(ignoreRecord: true),
