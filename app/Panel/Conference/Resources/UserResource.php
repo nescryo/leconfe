@@ -4,6 +4,7 @@ namespace App\Panel\Conference\Resources;
 
 use App\Actions\User\UserDeleteAction;
 use App\Actions\User\UserMailAction;
+use App\Actions\User\UserMergeAction;
 use App\Facades\Setting;
 use App\Filament\Forms\Components\PreferredLanguageSelect;
 use App\Forms\Components\SpatieMediaLibraryFileUpload;
@@ -332,6 +333,59 @@ class UserResource extends Resource
                         ])
                         ->action(function (User $record, array $data) {
                             UserMailAction::run($record, ...Arr::only($data, ['subject', 'message']));
+                        }),
+                    Action::make('merge')
+                        ->visible(fn (User $record) => auth()->user()->can('merge', $record))
+                        ->label(__('user_merge.action'))
+                        ->icon('heroicon-o-arrows-pointing-in')
+                        ->color('danger')
+                        ->modalWidth('xl')
+                        ->modalHeading(fn (User $record) => __('user_merge.heading', ['name' => $record->full_name]))
+                        ->modalDescription(fn (User $record) => __('user_merge.description', ['email' => $record->email]))
+                        ->modalSubmitActionLabel(__('user_merge.action'))
+                        ->form([
+                            Forms\Components\Select::make('head_id')
+                                ->label(__('user_merge.head_account'))
+                                ->helperText(__('user_merge.head_account_helper'))
+                                ->required()
+                                ->searchable()
+                                ->getSearchResultsUsing(fn (string $search, User $record) => static::getEloquentQuery()
+                                    ->whereKeyNot($record->getKey())
+                                    ->where(fn (Builder $query) => $query
+                                        ->where('email', 'LIKE', "%{$search}%")
+                                        ->orWhere('given_name', 'LIKE', "%{$search}%")
+                                        ->orWhere('family_name', 'LIKE', "%{$search}%"))
+                                    ->limit(50)
+                                    ->get()
+                                    ->mapWithKeys(fn (User $user) => [$user->getKey() => "{$user->full_name} ({$user->email})"])
+                                    ->all())
+                                ->getOptionLabelUsing(fn ($value) => ($user = User::find($value)) ? "{$user->full_name} ({$user->email})" : null),
+                            Forms\Components\Checkbox::make('confirmed')
+                                ->label(__('user_merge.confirm'))
+                                ->accepted()
+                                ->dehydrated(false),
+                        ])
+                        ->action(function (array $data, User $record, Action $action) {
+                            // Head must be visible to the current panel, same list the select searches.
+                            $head = static::getEloquentQuery()->whereKeyNot($record->getKey())->find($data['head_id']);
+
+                            if (! $head || ! auth()->user()->can('merge', $record)) {
+                                $action->failure();
+
+                                return;
+                            }
+
+                            try {
+                                UserMergeAction::run($head, $record);
+                            } catch (\Throwable $th) {
+                                $action->failureNotificationTitle($th->getMessage());
+                                $action->failure();
+
+                                return;
+                            }
+
+                            $action->successNotificationTitle(__('user_merge.success', ['name' => $head->full_name]));
+                            $action->success();
                         }),
                     Action::make('enable')
                         ->authorize('enable')

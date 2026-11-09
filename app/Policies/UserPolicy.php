@@ -2,6 +2,7 @@
 
 namespace App\Policies;
 
+use App\Actions\User\UserMergeAction;
 use App\Models\Enums\UserRole;
 use App\Models\Role;
 use App\Models\User;
@@ -201,6 +202,25 @@ class UserPolicy
             Role::getPermissionsForRole($role->getMeta('permission_level') ?? $role->name),
         ) || $role->permissions->contains('name', $permission))
             || ($roles->isNotEmpty() && $user->permissions()->where('name', $permission)->exists());
+    }
+
+    /**
+     * $model is the account that gets merged into another one and deleted.
+     * Admin may merge any accounts on the site. Others need User:merge inside a
+     * scheduled conference, where the list (and the head picker) only shows users
+     * registered there. Roles the source holds elsewhere move to the head account.
+     */
+    public function merge(User $user, User $model): bool
+    {
+        if ($user->is($model) || UserMergeAction::isAdmin($model)) {
+            return false;
+        }
+
+        if (UserMergeAction::isAdmin($user)) {
+            return true;
+        }
+
+        return ! app()->isOnSite() && $user->can('User:merge');
     }
 
     public function sendEmail(User $user, User $model)

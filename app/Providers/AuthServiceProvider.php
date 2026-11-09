@@ -40,6 +40,12 @@ class AuthServiceProvider extends ServiceProvider
                         'name' => $ability,
                     ]);
                 });
+
+                // Spatie's before callback ran before the row existed and yielded null.
+                // GateCache memoizes that result per ability, so re-check now that the row exists.
+                if (method_exists($user, 'checkPermissionTo')) {
+                    return $user->checkPermissionTo($ability) ?: null;
+                }
             }
         });
 

@@ -99,6 +99,7 @@
 - 'User:disable'
 - 'User:enable'
 - 'User:loginAs'
+- 'User:merge'
 - 'User:sendEmail'
 - 'User:update'
 - 'User:view'
