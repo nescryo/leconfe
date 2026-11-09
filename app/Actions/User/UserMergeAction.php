@@ -9,7 +9,6 @@ use App\Models\PresentationLike;
 use App\Models\PresentationView;
 use App\Models\Registration;
 use App\Models\Review;
-use App\Models\Role;
 use App\Models\Submission;
 use App\Models\SubmissionParticipant;
 use App\Models\User;
@@ -74,17 +73,9 @@ class UserMergeAction
     {
         $this->guard($head, $source);
 
-        $plan = $this->plan($head, $source);
-
-        if ($plan['blocked'] !== []) {
-            throw ValidationException::withMessages(['source' => $plan['blocked']]);
-        }
-
         $sourceSnapshot = ['id' => $source->getKey(), 'email' => $source->email, 'name' => $source->full_name];
 
-        DB::transaction(function () use ($head, $source, $plan) {
-            $this->applyPlan($plan);
-
+        DB::transaction(function () use ($head, $source) {
             foreach (self::REFERENCES as $table => $columns) {
                 foreach ($columns as $column) {
                     if (Schema::hasColumn($table, $column)) {
@@ -141,8 +132,6 @@ class UserMergeAction
             ->withProperties([
                 'merged_user' => $sourceSnapshot,
                 'head_id' => $head->getKey(),
-                'removed_participants' => $plan['participants'],
-                'removed_reviews' => $plan['reviews'],
             ])
             ->log("User {$sourceSnapshot['email']} merged into {$head->email}");
 
@@ -157,126 +146,6 @@ class UserMergeAction
 
         if (static::isAdmin($source)) {
             throw ValidationException::withMessages(['source' => 'An Admin account cannot be merged into another account.']);
-        }
-    }
-
-    /**
-     * What the merge has to remove so the head account never ends up twice in the same submission.
-     * The submitter wins: editor assignments on a submission the merged account submitted are released.
-     * Without a submitter involved, the head account's assignment is kept.
-     *
-     * @return array{participants: array<int, array<string, mixed>>, reviews: array<int, array<string, mixed>>, blocked: array<int, string>}
-     */
-    public function plan(User $head, User $source): array
-    {
-        $ids = [$head->getKey(), $source->getKey()];
-        $roleNames = Role::withoutGlobalScopes()->pluck('name', 'id');
-        $authorRoleIds = $roleNames->filter(fn ($name) => $name === UserRole::Author->value)->keys();
-        $editorRoleIds = $roleNames->filter(fn ($name) => in_array($name, [UserRole::ScheduledConferenceEditor->value, UserRole::TrackEditor->value], true))->keys();
-        $names = [$head->getKey() => $head->full_name, $source->getKey() => $source->full_name];
-
-        $participantDrops = [];
-        $reviewDrops = [];
-        $blocked = [];
-
-        $rows = DB::table('submission_has_participants')->whereIn('user_id', $ids)->get()->groupBy('submission_id');
-        $submitters = DB::table('submissions')->whereIn('user_id', $ids)->pluck('user_id', 'id');
-
-        foreach ($rows->keys()->merge($submitters->keys())->unique() as $submissionId) {
-            $mine = $rows->get($submissionId, collect());
-            $submitter = $submitters->get($submissionId);
-
-            $involved = $mine->pluck('user_id')->when($submitter, fn ($users) => $users->push($submitter))->unique();
-
-            if ($involved->count() < 2) {
-                continue;
-            }
-
-            $drop = $submitter !== null
-                ? $mine->reject(fn ($row) => $authorRoleIds->contains($row->role_id))
-                : $mine->where('user_id', $source->getKey());
-
-            foreach ($drop as $row) {
-                $participantDrops[] = [
-                    'id' => $row->id,
-                    'submission_id' => (int) $submissionId,
-                    'user_id' => $row->user_id,
-                    'user' => $names[$row->user_id] ?? null,
-                    'role_id' => $row->role_id,
-                    'role' => $roleNames->get($row->role_id),
-                ];
-            }
-
-            $droppingEditor = $drop->contains(fn ($row) => $editorRoleIds->contains($row->role_id));
-
-            if ($droppingEditor && ! DB::table('submission_has_participants')
-                ->where('submission_id', $submissionId)
-                ->whereIn('role_id', $editorRoleIds)
-                ->whereNotIn('id', $drop->pluck('id'))
-                ->exists()) {
-                $blocked[] = __('user_merge.blocked_no_editor', ['id' => $submissionId]);
-            }
-        }
-
-        $reviews = DB::table('reviews')->whereIn('user_id', $ids)->get()
-            ->groupBy(fn ($review) => $review->submission_id.':'.($review->review_round_id ?? 0));
-
-        $rank = fn ($review) => match (true) {
-            ! is_null($review->recommendation) && ! is_null($review->date_completed) => 2,
-            $review->status === \App\Constants\ReviewerStatus::ACCEPTED => 1,
-            default => 0,
-        };
-
-        foreach ($reviews as $group) {
-            if ($group->pluck('user_id')->unique()->count() < 2) {
-                continue;
-            }
-
-            $best = $group->map($rank)->max();
-
-            if ($group->filter(fn ($review) => $rank($review) === 2)->count() > 1) {
-                $blocked[] = __('user_merge.blocked_reviews', ['id' => $group->first()->submission_id]);
-
-                continue;
-            }
-
-            $keep = $group->first(fn ($review) => $rank($review) === $best && $review->user_id === $head->getKey())
-                ?? $group->first(fn ($review) => $rank($review) === $best);
-
-            foreach ($group->reject(fn ($review) => $review->id === $keep->id) as $review) {
-                $reviewDrops[] = (array) $review;
-            }
-        }
-
-        return ['participants' => $participantDrops, 'reviews' => $reviewDrops, 'blocked' => array_values(array_unique($blocked))];
-    }
-
-    /**
-     * Human readable lines for the confirmation modal.
-     *
-     * @return array<int, string>
-     */
-    public function describePlan(array $plan): array
-    {
-        return array_merge(
-            $plan['blocked'],
-            array_map(fn ($row) => __('user_merge.preview_participant', ['id' => $row['submission_id'], 'role' => $row['role'], 'name' => $row['user']]), $plan['participants']),
-            array_map(fn ($row) => __('user_merge.preview_review', ['id' => $row['submission_id']]), $plan['reviews']),
-        );
-    }
-
-    protected function applyPlan(array $plan): void
-    {
-        if ($plan['participants'] !== []) {
-            DB::table('submission_has_participants')->whereIn('id', array_column($plan['participants'], 'id'))->delete();
-        }
-
-        foreach ($plan['reviews'] as $row) {
-            DB::table('reviewer_assigned_files')->where('review_id', $row['id'])->delete();
-
-            if ($review = Review::withoutGlobalScopes()->find($row['id'])) {
-                $review->delete();
-            }
         }
     }
 
