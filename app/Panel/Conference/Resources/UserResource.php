@@ -19,9 +19,11 @@ use Filament\Facades\Filament;
 use Filament\Forms;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Grid;
+use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Form;
+use Filament\Forms\Get;
 use Filament\Resources\Resource;
 use Filament\Support\Enums\FontWeight;
 use Filament\Tables;
@@ -39,6 +41,7 @@ use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 use STS\FilamentImpersonate\Tables\Actions\Impersonate;
 
@@ -196,6 +199,22 @@ class UserResource extends Resource
             ]);
     }
 
+    /**
+     * @return array<int, string>
+     */
+    protected static function mergeNotes(mixed $headId, User $source): array
+    {
+        $head = static::getEloquentQuery()->whereKeyNot($source->getKey())->find($headId);
+
+        if (! $head) {
+            return [];
+        }
+
+        $action = UserMergeAction::make();
+
+        return $action->describePlan($action->plan($head, $source));
+    }
+
     public static function table(Table $table): Table
     {
         return $table
@@ -348,18 +367,30 @@ class UserResource extends Resource
                                 ->label(__('user_merge.head_account'))
                                 ->helperText(__('user_merge.head_account_helper'))
                                 ->required()
+                                ->live()
                                 ->searchable()
-                                ->getSearchResultsUsing(fn (string $search, User $record) => static::getEloquentQuery()
-                                    ->whereKeyNot($record->getKey())
-                                    ->where(fn (Builder $query) => $query
-                                        ->where('email', 'LIKE', "%{$search}%")
-                                        ->orWhere('given_name', 'LIKE', "%{$search}%")
-                                        ->orWhere('family_name', 'LIKE', "%{$search}%"))
-                                    ->limit(50)
-                                    ->get()
-                                    ->mapWithKeys(fn (User $user) => [$user->getKey() => "{$user->full_name} ({$user->email})"])
-                                    ->all())
+                                ->getSearchResultsUsing(function (string $search, User $record) {
+                                    $term = '%'.addcslashes($search, '%_\\').'%';
+
+                                    return static::getEloquentQuery()
+                                        ->whereKeyNot($record->getKey())
+                                        ->where(fn (Builder $query) => $query
+                                            ->where('email', 'LIKE', $term)
+                                            ->orWhere('given_name', 'LIKE', $term)
+                                            ->orWhere('family_name', 'LIKE', $term))
+                                        ->limit(50)
+                                        ->get()
+                                        ->mapWithKeys(fn (User $user) => [$user->getKey() => "{$user->full_name} ({$user->email})"])
+                                        ->all();
+                                })
                                 ->getOptionLabelUsing(fn ($value) => ($user = User::find($value)) ? "{$user->full_name} ({$user->email})" : null),
+                            Placeholder::make('preview')
+                                ->label(__('user_merge.preview_heading'))
+                                ->visible(fn (Get $get, User $record) => filled($get('head_id')) && static::mergeNotes($get('head_id'), $record) !== [])
+                                ->content(fn (Get $get, User $record) => new HtmlString(
+                                    '<ul class="list-disc ps-5">'.collect(static::mergeNotes($get('head_id'), $record))
+                                        ->map(fn (string $line) => '<li>'.e($line).'</li>')->implode('').'</ul>'
+                                )),
                             Forms\Components\Checkbox::make('confirmed')
                                 ->label(__('user_merge.confirm'))
                                 ->accepted()
@@ -378,7 +409,15 @@ class UserResource extends Resource
                             try {
                                 UserMergeAction::run($head, $record);
                             } catch (\Throwable $th) {
-                                $action->failureNotificationTitle($th->getMessage());
+                                if (! $th instanceof \Illuminate\Validation\ValidationException) {
+                                    report($th);
+                                }
+
+                                $action->failureNotificationTitle(
+                                    $th instanceof \Illuminate\Validation\ValidationException
+                                        ? collect($th->errors())->flatten()->first()
+                                        : __('user_merge.failed')
+                                );
                                 $action->failure();
 
                                 return;
